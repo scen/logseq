@@ -877,6 +877,9 @@
   (p/let [_ (file-handler/alter-file repo path content {:from-disk? true})]
     (ui-handler/re-render-root!)))
 
+(defmethod handle :file-watcher/nfs-change [[_ type payload]]
+  (fs-watcher/handle-changed! type payload))
+
 (rum/defcs file-id-conflict-item <
   (rum/local false ::resolved?)
   [state repo file data]

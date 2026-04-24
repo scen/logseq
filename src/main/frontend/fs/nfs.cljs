@@ -24,6 +24,19 @@
 ;; the browser will not keep asking permissions.
 (defonce nfs-file-handles-cache (atom {}))
 
+(defonce ^:private *observers (atom {}))
+
+(defn- ignored?
+  "True if the relative path should be skipped by NFS (matches the filter used in
+  readdir-and-reload-all-handles / get-files-and-reload-all-handles)."
+  [rpath]
+  (let [ext (util/get-file-ext rpath)]
+    (or (string/blank? rpath)
+        (string/starts-with? rpath ".")
+        (string/starts-with? rpath "logseq/bak")
+        (string/starts-with? rpath "logseq/version-files")
+        (not (contains? #{"md" "org" "excalidraw" "edn" "css"} ext)))))
+
 (defn- get-nfs-file-handle
   [handle-path]
   (get @nfs-file-handles-cache handle-path))
@@ -115,14 +128,9 @@
                                     (when-not (string/includes? path "/.")
                                       (add-nfs-file-handle! handle-path entry)))))]
     (->> files
-         (remove  (fn [file]
-                    (let [rpath (string/replace-first (.-webkitRelativePath file) (str root-dir "/") "")
-                          ext (util/get-file-ext rpath)]
-                      (or  (string/blank? rpath)
-                           (string/starts-with? rpath ".")
-                           (string/starts-with? rpath "logseq/bak")
-                           ; (string/starts-with? rpath "logseq/version-files")
-                           (not (contains? #{"md" "org" "excalidraw" "edn" "css"} ext))))))
+         (remove (fn [file]
+                   (let [rpath (string/replace-first (.-webkitRelativePath file) (str root-dir "/") "")]
+                     (ignored? rpath))))
          (map (fn [file]
                 (-> (.-webkitRelativePath file)
                     gp-util/path-normalize))))))
@@ -140,14 +148,9 @@
                                     (when-not (string/includes? path "/.")
                                       (add-nfs-file-handle! handle-path entry)))))]
     (p/all (->> files
-                (remove  (fn [file]
-                           (let [rpath (string/replace-first (.-webkitRelativePath file) (str root-dir "/") "")
-                                 ext (util/get-file-ext rpath)]
-                             (or  (string/blank? rpath)
-                                  (string/starts-with? rpath ".")
-                                  (string/starts-with? rpath "logseq/bak")
-                                  (string/starts-with? rpath "logseq/version-files")
-                                  (not (contains? #{"md" "org" "excalidraw" "edn" "css"} ext))))))
+                (remove (fn [file]
+                          (let [rpath (string/replace-first (.-webkitRelativePath file) (str root-dir "/") "")]
+                            (ignored? rpath))))
                 ;; Read out using .text, Promise<string>
                 (map (fn [file]
                        (p/let [content (.text file)]
@@ -160,6 +163,93 @@
                           :content     content
                           :file/file   file
                           :file/handle (.-handle file)})))))))
+
+(defn- dispatch-watch-event!
+  "Publish a file-watcher event. A handler registered in
+  frontend.handler.events forwards it to
+  frontend.fs.watcher-handler/handle-changed!. The indirection avoids a
+  require cycle (nfs -> watcher-handler -> fs -> nfs)."
+  [type payload]
+  (state/pub-event! [:file-watcher/nfs-change type payload]))
+
+(defn- handle-observer-record!
+  [dir record]
+  (let [observer-type (.-type record)
+        changed-handle (.-changedHandle record)
+        kind (when changed-handle (.-kind changed-handle))
+        components (js->clj (.-relativePathComponents record))
+        ;; rel-path is the key the watcher-handler pipeline expects; handle-path
+        ;; keys into nfs-file-handles-cache and must include the dir prefix to
+        ;; match the pattern used by readdir-and-reload-all-handles.
+        rel-path (path/path-normalize (apply path/path-join components))
+        full-path (path/path-normalize (apply path/path-join dir components))
+        handle-path (str "handle/" full-path)]
+    (cond
+      (= observer-type "errored")
+      (do
+        (log/error ::fs-observer-errored {:dir dir})
+        (notification/show!
+         "File system watcher error. External changes may stop updating until you reload the graph."
+         :error false))
+
+      (= observer-type "unknown")
+      (log/warn ::fs-observer-unknown {:dir dir :path rel-path})
+
+      ;; Apply the NFS ignore filter for files; directories bypass it because
+      ;; handle-changed! decides whether to forward addDir/unlinkDir.
+      (and (not= kind "directory")
+           (ignored? rel-path))
+      nil
+
+      (= observer-type "disappeared")
+      (do
+        (remove-nfs-file-handle! handle-path)
+        (dispatch-watch-event!
+         (if (= kind "directory") "unlinkDir" "unlink")
+         {:dir dir :path rel-path :content nil :stat nil}))
+
+      (= observer-type "moved")
+      (let [from-components (some-> (.-relativePathMovedFrom record) js->clj)
+            from-rel (when (seq from-components)
+                       (path/path-normalize (apply path/path-join from-components)))
+            from-full (when (seq from-components)
+                        (path/path-normalize (apply path/path-join dir from-components)))]
+        (when from-full
+          (remove-nfs-file-handle! (str "handle/" from-full))
+          (dispatch-watch-event!
+           (if (= kind "directory") "unlinkDir" "unlink")
+           {:dir dir :path from-rel :content nil :stat nil}))
+        (if (= kind "directory")
+          (do
+            (add-nfs-file-handle! handle-path changed-handle)
+            (dispatch-watch-event!
+             "addDir" {:dir dir :path rel-path :content nil :stat nil}))
+          (p/let [file (.getFile changed-handle)
+                  content (.text file)]
+            (add-nfs-file-handle! handle-path changed-handle)
+            (dispatch-watch-event!
+             "add"
+             {:dir dir :path rel-path :content content
+              :stat {:mtime (.-lastModified file)
+                     :ctime (.-lastModified file)
+                     :size (.-size file)}}))))
+
+      (and (= observer-type "appeared") (= kind "directory"))
+      (do
+        (add-nfs-file-handle! handle-path changed-handle)
+        (dispatch-watch-event!
+         "addDir" {:dir dir :path rel-path :content nil :stat nil}))
+
+      (or (= observer-type "appeared") (= observer-type "modified"))
+      (p/let [file (.getFile changed-handle)
+              content (.text file)]
+        (add-nfs-file-handle! handle-path changed-handle)
+        (dispatch-watch-event!
+         (if (= observer-type "appeared") "add" "change")
+         {:dir dir :path rel-path :content content
+          :stat {:mtime (.-lastModified file)
+                 :ctime (.-lastModified file)
+                 :size (.-size file)}})))))
 
 (defrecord ^:large-vars/cleanup-todo Nfs []
   protocol/Fs
@@ -362,8 +452,36 @@
             files (get-files-and-reload-all-handles dir handle)]
       files))
 
-  (watch-dir! [_this _dir _options]
-    nil)
+  (watch-dir! [_this dir _options]
+    (p/let [_ (await-permission-granted (str "logseq_local_" dir))
+            handle-path (str "handle/" dir)
+            root-handle (or (get-nfs-file-handle handle-path)
+                            (idb/get-item handle-path))]
+      (cond
+        (not root-handle)
+        (log/warn ::watch-dir-no-handle {:dir dir})
 
-  (unwatch-dir! [_this _dir]
-    nil))
+        (not (utils/fileSystemObserverSupported))
+        (do
+          (notification/show!
+           "File system watching is unavailable in this browser. External changes will not be picked up automatically."
+           :warning false)
+          (log/warn ::fs-observer-unsupported {:dir dir}))
+
+        (get @*observers dir)
+        nil
+
+        :else
+        (p/let [observer (utils/createFsObserver
+                          root-handle
+                          (fn [records _observer]
+                            (doseq [record (array-seq records)]
+                              (handle-observer-record! dir record))))]
+          (swap! *observers assoc dir observer)))))
+
+  (unwatch-dir! [_this dir]
+    (when-let [observer (get @*observers dir)]
+      (try (.disconnect observer)
+           (catch :default e
+             (log/warn ::unwatch-dir-disconnect-error {:dir dir :error e})))
+      (swap! *observers dissoc dir))))

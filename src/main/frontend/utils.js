@@ -172,6 +172,16 @@ export const nfsSupported = () => {
   return false
 }
 
+export const fileSystemObserverSupported = () => {
+  return typeof window !== 'undefined' && typeof window.FileSystemObserver === 'function'
+}
+
+export const createFsObserver = async (rootHandle, cb) => {
+  const observer = new window.FileSystemObserver(cb)
+  await observer.observe(rootHandle, { recursive: true })
+  return observer
+}
+
 const inputTypes = [
   window.HTMLInputElement,
   window.HTMLSelectElement,

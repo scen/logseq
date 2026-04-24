@@ -165,3 +165,18 @@ var openDirectoryOptions;
  * @param {function} cb
  */
 var openDirectory = function(options, cb) {};
+
+// FileSystemObserver (Chrome 129+)
+// https://developer.chrome.com/docs/web-platform/file-system-observer
+var FileSystemObserver = function(callback) {};
+FileSystemObserver.prototype.observe = function(handle, options) {};
+FileSystemObserver.prototype.unobserve = function(handle) {};
+FileSystemObserver.prototype.disconnect = function() {};
+
+// FileSystemChangeRecord fields
+dummy.relativePathComponents = function() {};
+dummy.relativePathMovedFrom = function() {};
+dummy.changedHandle = function() {};
+dummy.root = function() {};
+dummy.kind = function() {};
+dummy.type = function() {};
