@@ -17,6 +17,7 @@
             [frontend.state :as state]
             [frontend.util :as util]
             [frontend.util.fs :as fs-util]
+            [goog.object :as gobj]
             [lambdaisland.glogi :as log]
             [logseq.common.path :as path]
             [logseq.graph-parser.config :as gp-config]
@@ -43,17 +44,58 @@
 
 (defn- handle-add-and-change!
   [repo path content db-content mtime backup?]
-  (p/let [;; save the previous content in a versioned bak file to avoid data overwritten.
-          _ (when backup?
-              (-> (when-let [repo-dir (config/get-local-dir repo)]
-                    (file-handler/backup-file! repo-dir path db-content content))
-                  (p/catch #(js/console.error "❌ Bak Error: " path %))))
+  ;; Capture editor state BEFORE the DB transaction so we can tell whether the
+  ;; user has typed anything in the focused block (textarea is uncontrolled —
+  ;; Rum re-render alone won't refresh its DOM value). Without this, an
+  ;; external edit to the focused block stays invisible in the textarea, and
+  ;; will-unmount's unconditional save then clobbers the disk content with the
+  ;; stale textarea value.
+  (let [edit-input-id (state/get-edit-input-id)
+        edit-block (state/get-edit-block)
+        edit-block-uuid (:block/uuid edit-block)
+        prev-block-content (:block/content edit-block)
+        textarea-node (state/get-input)
+        textarea-value (some-> textarea-node (gobj/get "value"))
+        editor-clean? (and edit-input-id
+                           edit-block-uuid
+                           (= (string/trim (or textarea-value ""))
+                              (string/trim (or prev-block-content ""))))]
+    (p/let [;; save the previous content in a versioned bak file to avoid data overwritten.
+            _ (when backup?
+                (-> (when-let [repo-dir (config/get-local-dir repo)]
+                      (file-handler/backup-file! repo-dir path db-content content))
+                    (p/catch #(js/console.error "❌ Bak Error: " path %))))
 
-          _ (file-handler/alter-file repo path content {:re-render-root? true
-                                                        :from-disk? true
-                                                        :fs/event :fs/local-file-change})]
-    (set-missing-block-ids! content)
-    (db/set-file-last-modified-at! repo path mtime)))
+            _ (file-handler/alter-file repo path content {:re-render-root? true
+                                                          :from-disk? true
+                                                          :fs/event :fs/local-file-change})]
+      (set-missing-block-ids! content)
+      (db/set-file-last-modified-at! repo path mtime)
+      (when (and edit-input-id edit-block-uuid)
+        (let [new-block (db/entity [:block/uuid edit-block-uuid])
+              new-content (:block/content new-block)
+              block-content-changed? (not= (string/trim (or new-content ""))
+                                           (string/trim (or prev-block-content "")))]
+          (cond
+            (nil? new-block)
+            ;; External edit removed the block under the cursor. Blank the
+            ;; textarea before clearing the editor so will-unmount's save
+            ;; doesn't write stale bytes against a now-missing entity.
+            (do
+              (when textarea-node (util/set-change-value textarea-node ""))
+              (state/clear-edit!))
+
+            (and editor-clean? block-content-changed?)
+            ;; Common case: user clicked into a block and an external editor
+            ;; updated it. Refresh state + DOM so the new content is visible
+            ;; and will-unmount reads fresh bytes.
+            (state/set-edit-content! edit-input-id new-content true)
+
+            ;; Editor dirty + same block changed: leave in-progress typing
+            ;; alone (clobbering it would surprise the user). The pre-existing
+            ;; blur-save still wins here; that's a narrower conflict case
+            ;; deliberately out of scope for this fix.
+            :else nil))))))
 
 (defn handle-changed!
   [type {:keys [dir path content stat global-dir] :as payload}]
