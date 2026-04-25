@@ -182,6 +182,16 @@ export const createFsObserver = async (rootHandle, cb) => {
   return observer
 }
 
+export const sha256Hex = async (text) => {
+  const buf = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  const bytes = new Uint8Array(buf)
+  let hex = ''
+  for (let i = 0; i < bytes.length; i++) {
+    hex += bytes[i].toString(16).padStart(2, '0')
+  }
+  return hex
+}
+
 const inputTypes = [
   window.HTMLInputElement,
   window.HTMLSelectElement,

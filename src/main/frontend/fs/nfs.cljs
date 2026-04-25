@@ -26,6 +26,51 @@
 
 (defonce ^:private *observers (atom {}))
 
+;; Echo suppression for FileSystemObserver: when we write a file ourselves,
+;; remember its content hash so the observer event that bounces back can be
+;; recognized and dropped. Without this, a fast typist can race the async
+;; (.getFile) → (.text) snapshot read against the next DB update and trip
+;; handle-changed!'s "external edit" branch (backup-and-overwrite).
+(defonce ^:private *recent-self-writes (atom {})) ;; full-path → [{:hash :expires-at}, ...]
+(def ^:private self-write-ttl-ms 5000)
+
+(defn- now-ms [] (.now js/Date))
+
+(defn- prune-self-writes [entries]
+  (let [now (now-ms)]
+    (vec (filter #(> (:expires-at %) now) entries))))
+
+(defn- record-self-write!
+  "Record that we are about to write `content` to `full-path`, so the resulting
+  observer echo can be silenced. Returns a promise that resolves once the
+  fingerprint is in the atom — await it before kicking off the actual write."
+  [full-path content]
+  (p/let [hash (utils/sha256Hex content)]
+    (let [path-key (path/path-normalize full-path)
+          entry {:hash hash :expires-at (+ (now-ms) self-write-ttl-ms)}]
+      (swap! *recent-self-writes update path-key
+             (fn [entries] (conj (prune-self-writes (or entries [])) entry)))
+      nil)))
+
+(defn- echo-of-self-write?
+  "Promise<bool>. True iff `content` matches a non-expired self-write at
+  `full-path`. The matched entry is consumed so a later genuine external write
+  of the same bytes still goes through."
+  [full-path content]
+  (p/let [hash (utils/sha256Hex content)]
+    (let [path-key (path/path-normalize full-path)
+          entries (prune-self-writes (get @*recent-self-writes path-key []))
+          match-idx (first (keep-indexed (fn [i e] (when (= (:hash e) hash) i)) entries))]
+      (if match-idx
+        (let [remaining (into (subvec entries 0 match-idx)
+                              (subvec entries (inc match-idx)))]
+          (swap! *recent-self-writes
+                 (fn [m] (if (seq remaining)
+                           (assoc m path-key remaining)
+                           (dissoc m path-key))))
+          true)
+        false))))
+
 (defn- ignored?
   "True if the relative path should be skipped by NFS (matches the filter used in
   readdir-and-reload-all-handles / get-files-and-reload-all-handles)."
@@ -242,14 +287,16 @@
 
       (or (= observer-type "appeared") (= observer-type "modified"))
       (p/let [file (.getFile changed-handle)
-              content (.text file)]
+              content (.text file)
+              echo? (echo-of-self-write? full-path content)]
         (add-nfs-file-handle! handle-path changed-handle)
-        (dispatch-watch-event!
-         (if (= observer-type "appeared") "add" "change")
-         {:dir dir :path rel-path :content content
-          :stat {:mtime (.-lastModified file)
-                 :ctime (.-lastModified file)
-                 :size (.-size file)}})))))
+        (when-not echo?
+          (dispatch-watch-event!
+           (if (= observer-type "appeared") "add" "change")
+           {:dir dir :path rel-path :content content
+            :stat {:mtime (.-lastModified file)
+                   :ctime (.-lastModified file)
+                   :size (.-size file)}}))))))
 
 (defrecord ^:large-vars/cleanup-todo Nfs []
   protocol/Fs
@@ -350,6 +397,7 @@
                  (not (string/includes? path "/.recycle/")))
               (state/pub-event! [:file/not-matched-from-disk path disk-content content])
               (p/let [_ (verify-permission repo true)
+                      _ (record-self-write! fpath content)
                       _ (utils/writeFile file-handle content)
                       file (.getFile file-handle)]
                 (when file
@@ -369,6 +417,7 @@
                       text (.text file)]
                 (if (string/blank? text)
                   (p/let [;; _ (idb/set-item! file-handle-path file-handle)
+                          _ (record-self-write! fpath content)
                           _ (utils/writeFile file-handle content)
                           file (.getFile file-handle)]
                     (when file
