@@ -1,0 +1,80 @@
+name: Deploy to GitHub Pages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/fs-observer]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CLOJURE_VERSION: '1.11.1.1413'
+  NODE_VERSION: '20'
+  JAVA_VERSION: '17'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: yarn
+
+      - name: Setup Clojure
+        uses: DeLaGuardo/setup-clojure@13.0
+        with:
+          cli: ${{ env.CLOJURE_VERSION }}
+
+      - name: Install JS deps
+        run: yarn install --frozen-lockfile
+
+      - name: Build CSS and copy assets (gulp)
+        run: yarn gulp:build
+
+      - name: Build CLJS release (app target only)
+        env:
+          NODE_OPTIONS: '--max-old-space-size=6144'
+        run: clojure -M:cljs release app
+
+      - name: Prepare static dir for Pages
+        run: |
+          touch static/.nojekyll
+          # SPA deep-link fallback: anything not found falls back to index.html
+          cp static/index.html static/404.html
+          # Drop electron-only files so they don't bloat the artifact
+          rm -f static/electron.html static/electron.js static/preload.js
+          rm -f static/forge.config.js static/entitlements.plist
+          rm -rf static/node_modules
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: static
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
