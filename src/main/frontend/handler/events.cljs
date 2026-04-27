@@ -163,7 +163,15 @@
        (state/pub-event! [:graph/ready graph])
        (file-sync-restart!)
        (when-let [dir-name (config/get-repo-dir graph)]
-         (fs/watch-dir! dir-name))))))
+         (fs/watch-dir! dir-name))
+       ;; Reconcile DB + indexes against disk on switch — web NFS only.
+       ;; FileSystemObserver only sees changes after observe(), so without
+       ;; this, edits made while the graph was inactive stay invisible.
+       (when (and (config/local-db? graph)
+                  (not (util/electron?))
+                  (not (mobile-util/native-platform?))
+                  (not (state/unlinked-dir? (config/get-repo-dir graph))))
+         (nfs-handler/refresh! graph (fn [])))))))
 
 ;; Parameters for the `persist-db` function, to show the notification messages
 (def persist-db-noti-m
@@ -286,6 +294,28 @@
 (defmethod handle :modal/nfs-ask-permission []
   (when-let [repo (get-local-repo)]
     (state/set-modal! (ask-permission repo))))
+
+;; Fired by frontend.fs.nfs/verify-permission on the not-granted → granted
+;; transition. Reconciles the in-memory DB and indexes against on-disk files
+;; on (re)load — FileSystemObserver only catches changes after observe(), so
+;; without this any out-of-band edits made while the tab was closed stay
+;; invisible until the user hits Refresh manually. Web NFS only.
+(defmethod handle :nfs/permission-granted [[_ repo]]
+  (when (and repo
+             (config/local-db? repo)
+             (not (util/electron?))
+             (not (mobile-util/native-platform?))
+             (not (state/unlinked-dir? (config/get-repo-dir repo))))
+    ;; Two-pass refresh: Chrome serves a stale directory-handle snapshot on
+    ;; the first re-acquisition in a session. The first read primes Chrome's
+    ;; cache; a second read after a brief delay sees the fresh disk content.
+    ;; Without this, external edits made while the tab was closed only show
+    ;; up after a second close+reopen cycle.
+    (nfs-handler/refresh! repo
+                          (fn []
+                            (js/setTimeout
+                             #(nfs-handler/refresh! repo (fn []))
+                             500)))))
 
 (defonce *query-properties (atom {}))
 (rum/defc query-properties-settings-inner < rum/reactive

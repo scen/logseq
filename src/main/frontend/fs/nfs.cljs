@@ -118,7 +118,14 @@
     (p/then
      (utils/verifyPermission handle read-write?)
      (fn []
-       (state/set-state! [:nfs/user-granted? repo] true)
+       (let [first-grant? (not (state/nfs-user-granted? repo))]
+         (state/set-state! [:nfs/user-granted? repo] true)
+         ;; Fire a one-shot event on the transition so consumers (e.g. the
+         ;; auto-refresh-on-load hook) can run work that needs disk access.
+         ;; Skipped on subsequent calls because verify-permission runs on
+         ;; every read/write and we don't want to refresh repeatedly.
+         (when first-grant?
+           (state/pub-event! [:nfs/permission-granted repo])))
        true))))
 
 (defn check-directory-permission!
