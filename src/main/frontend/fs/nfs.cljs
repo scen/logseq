@@ -7,6 +7,7 @@
    - readdir/get-files is called by re-index and initial watcher to init all handles"
   (:require [frontend.fs.protocol :as protocol]
             [frontend.util :as util]
+            [clojure.set :as set]
             [clojure.string :as string]
             [frontend.idb :as idb]
             [promesa.core :as p]
@@ -25,6 +26,12 @@
 (defonce nfs-file-handles-cache (atom {}))
 
 (defonce ^:private *observers (atom {}))
+
+;; Polling fallback for Linux NFS: inotify (used by FileSystemObserver on Linux)
+;; does not support NFS mounts. A periodic mtime scan works on any filesystem.
+(defonce ^:private *poll-mtimes (atom {}))  ;; dir → {handle-path → mtime}
+(defonce ^:private *poll-timers (atom {}))  ;; dir → js/setInterval id
+(def ^:private poll-interval-ms 3000)
 
 ;; Echo suppression for FileSystemObserver: when we write a file ourselves,
 ;; remember its content hash so the observer event that bounces back can be
@@ -305,6 +312,69 @@
                    :ctime (.-lastModified file)
                    :size (.-size file)}}))))))
 
+(defn- poll-dir-once!
+  "Scan dir for mtime changes and dispatch watch events.
+  Serves as the NFS fallback: inotify (backing FileSystemObserver on Linux)
+  does not support NFS mounts, but mtime polling works on any filesystem."
+  [dir root-handle]
+  (-> (p/let [files        (utils/getFiles
+                            root-handle true
+                            (fn [fpath entry]
+                              (when-not (string/includes? fpath "/.")
+                                (add-nfs-file-handle! (str "handle/" fpath) entry))))
+              prev-mtimes  (get @*poll-mtimes dir)  ;; nil on first run (init cycle)
+              initializing? (nil? prev-mtimes)
+              prev-mtimes  (or prev-mtimes {})
+              seen-handles (atom #{})
+              rel-files    (remove (fn [f]
+                                     (ignored? (string/replace-first
+                                                (.-webkitRelativePath f)
+                                                (str dir "/") "")))
+                                   files)]
+        (p/do!
+         (p/all
+          (map (fn [file]
+                 (let [rpath     (string/replace-first
+                                  (.-webkitRelativePath file) (str dir "/") "")
+                       full-path (path/path-join dir rpath)
+                       hp        (str "handle/" full-path)
+                       mtime     (.-lastModified file)
+                       prev      (get prev-mtimes hp)]
+                   (swap! seen-handles conj hp)
+                   (swap! *poll-mtimes assoc-in [dir hp] mtime)
+                   (when (and (not initializing?) (not= mtime prev))
+                     (p/let [content (.text file)
+                             echo?   (echo-of-self-write? full-path content)]
+                       (when-not echo?
+                         (dispatch-watch-event!
+                          (if prev "change" "add")
+                          {:dir  dir  :path rpath  :content content
+                           :stat {:mtime mtime :ctime mtime
+                                  :size  (.-size file)}}))))))
+               rel-files))
+         (when-not initializing?
+           (let [deleted (set/difference (set (keys prev-mtimes)) @seen-handles)]
+             (doseq [hp deleted]
+               (let [rpath (string/replace-first hp (str "handle/" dir "/") "")]
+                 (swap! *poll-mtimes update dir dissoc hp)
+                 (remove-nfs-file-handle! hp)
+                 (dispatch-watch-event!
+                  "unlink"
+                  {:dir dir :path rpath :content nil :stat nil})))))))
+     (p/catch (fn [e]
+                (log/warn ::poll-error {:dir dir :error (str e)})))))
+
+(defn- start-poller! [dir root-handle]
+  (when-not (get @*poll-timers dir)
+    (swap! *poll-timers assoc dir
+           (js/setInterval #(poll-dir-once! dir root-handle) poll-interval-ms))))
+
+(defn- stop-poller! [dir]
+  (when-let [id (get @*poll-timers dir)]
+    (js/clearInterval id)
+    (swap! *poll-timers dissoc dir)
+    (swap! *poll-mtimes dissoc dir)))
+
 (defrecord ^:large-vars/cleanup-todo Nfs []
   protocol/Fs
   (mkdir! [_this dir]
@@ -517,27 +587,35 @@
         (not root-handle)
         (log/warn ::watch-dir-no-handle {:dir dir})
 
-        (not (utils/fileSystemObserverSupported))
-        (do
-          (notification/show!
-           "File system watching is unavailable in this browser. External changes will not be picked up automatically."
-           :warning false)
-          (log/warn ::fs-observer-unsupported {:dir dir}))
-
-        (get @*observers dir)
+        ;; Already watching via observer and/or poller.
+        (or (get @*observers dir) (get @*poll-timers dir))
         nil
 
+        (utils/fileSystemObserverSupported)
+        ;; Start FSO for instant notifications on local filesystems, plus
+        ;; the poller as a fallback for NFS mounts where inotify is silent.
+        (p/do!
+         (p/let [observer (utils/createFsObserver
+                           root-handle
+                           (fn [records _observer]
+                             (doseq [record (array-seq records)]
+                               (handle-observer-record! dir record))))]
+           (swap! *observers assoc dir observer))
+         (start-poller! dir root-handle))
+
         :else
-        (p/let [observer (utils/createFsObserver
-                          root-handle
-                          (fn [records _observer]
-                            (doseq [record (array-seq records)]
-                              (handle-observer-record! dir record))))]
-          (swap! *observers assoc dir observer)))))
+        ;; No FileSystemObserver (old/unsupported browser): fall back to polling.
+        (do
+          (notification/show!
+           "File system observer is unavailable in this browser; polling for changes every 3 s instead."
+           :warning false)
+          (log/warn ::fs-observer-unsupported {:dir dir})
+          (start-poller! dir root-handle)))))
 
   (unwatch-dir! [_this dir]
     (when-let [observer (get @*observers dir)]
       (try (.disconnect observer)
            (catch :default e
              (log/warn ::unwatch-dir-disconnect-error {:dir dir :error e})))
-      (swap! *observers dissoc dir))))
+      (swap! *observers dissoc dir))
+    (stop-poller! dir)))
