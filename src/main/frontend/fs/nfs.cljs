@@ -39,7 +39,7 @@
 ;; (.getFile) → (.text) snapshot read against the next DB update and trip
 ;; handle-changed!'s "external edit" branch (backup-and-overwrite).
 (defonce ^:private *recent-self-writes (atom {})) ;; full-path → [{:hash :expires-at}, ...]
-(def ^:private self-write-ttl-ms 5000)
+(def ^:private self-write-ttl-ms 10000)
 
 (defn- now-ms [] (.now js/Date))
 
@@ -331,6 +331,8 @@
                                                 (.-webkitRelativePath f)
                                                 (str dir "/") "")))
                                    files)]
+        (when initializing?
+          (log/info ::poll-init {:dir dir :file-count (count rel-files)}))
         (p/do!
          (p/all
           (map (fn [file]
@@ -345,15 +347,23 @@
                    (when (and (not initializing?) (not= mtime prev))
                      (p/let [content (.text file)
                              echo?   (echo-of-self-write? full-path content)]
-                       (when-not echo?
-                         (dispatch-watch-event!
-                          (if prev "change" "add")
-                          {:dir  dir  :path rpath  :content content
-                           :stat {:mtime mtime :ctime mtime
-                                  :size  (.-size file)}}))))))
+                       (if echo?
+                         (log/debug ::poll-echo-suppressed {:dir dir :path rpath})
+                         (do
+                           (log/info ::poll-dispatch
+                                     {:dir dir :path rpath
+                                      :event (if prev "change" "add")
+                                      :mtime mtime})
+                           (dispatch-watch-event!
+                            (if prev "change" "add")
+                            {:dir  dir  :path rpath  :content content
+                             :stat {:mtime mtime :ctime mtime
+                                    :size  (.-size file)}})))))))
                rel-files))
          (when-not initializing?
            (let [deleted (set/difference (set (keys prev-mtimes)) @seen-handles)]
+             (when (seq deleted)
+               (log/info ::poll-deleted {:dir dir :paths (mapv #(string/replace-first % (str "handle/" dir "/") "") deleted)}))
              (doseq [hp deleted]
                (let [rpath (string/replace-first hp (str "handle/" dir "/") "")]
                  (swap! *poll-mtimes update dir dissoc hp)
@@ -366,11 +376,15 @@
 
 (defn- start-poller! [dir root-handle]
   (when-not (get @*poll-timers dir)
+    (log/info ::poll-start {:dir dir :interval-ms poll-interval-ms})
     (swap! *poll-timers assoc dir
-           (js/setInterval #(poll-dir-once! dir root-handle) poll-interval-ms))))
+           (js/setInterval #(poll-dir-once! dir root-handle) poll-interval-ms))
+    ;; Run an immediate first cycle to initialise the mtime snapshot.
+    (poll-dir-once! dir root-handle)))
 
 (defn- stop-poller! [dir]
   (when-let [id (get @*poll-timers dir)]
+    (log/info ::poll-stop {:dir dir})
     (js/clearInterval id)
     (swap! *poll-timers dissoc dir)
     (swap! *poll-mtimes dissoc dir)))
