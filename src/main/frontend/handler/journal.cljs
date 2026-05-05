@@ -1,5 +1,6 @@
 (ns ^:no-doc frontend.handler.journal
   (:require [frontend.date :as date]
+            [frontend.handler.editor :as editor-handler]
             [frontend.handler.route :as route-handler]
             [frontend.state :as state]
             [frontend.util :as util]
@@ -15,6 +16,14 @@
 (defn go-to-tomorrow!
   []
   (redirect-to-journal! (date/tomorrow)))
+
+(defn go-to-today-and-edit-new!
+  []
+  (when (state/enable-journals? (state/get-current-repo))
+    (let [today (date/today)]
+      (route-handler/redirect! {:to          :page
+                                :path-params {:name today}})
+      (editor-handler/api-insert-new-block! "" {:page today}))))
 
 (defn- get-current-journal
   []

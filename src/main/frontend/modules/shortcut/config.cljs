@@ -384,6 +384,9 @@
    :go/journals                             {:binding "g j"
                                              :fn      route-handler/go-to-journals!}
 
+   :go/journals-edit-new                    {:binding "g i"
+                                             :fn      journal-handler/go-to-today-and-edit-new!}
+
    :go/backward                             {:binding "mod+open-square-bracket"
                                              :fn      (fn [_] (js/window.history.back))}
 
@@ -707,6 +710,7 @@
      (-> (build-category-map
            [:go/home
             :go/journals
+            :go/journals-edit-new
             :go/all-pages
             :go/flashcards
             :go/graph-view

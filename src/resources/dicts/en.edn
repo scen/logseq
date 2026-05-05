@@ -792,6 +792,7 @@
   :go/search-in-page              "Search blocks in page"
   :command-palette/toggle         "Search commands"
   :go/journals                    "Go to journals"
+  :go/journals-edit-new           "Go to today's journal and start a new bullet"
   :go/backward                    "Backwards"
   :go/forward                     "Forwards"
   :search/re-index                "Rebuild search index"
