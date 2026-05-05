@@ -585,10 +585,10 @@
   [state close-fn close-backdrop?]
   [:div.ui__modal-overlay
    {:class    (case state
-                "entering" "ease-out duration-300 opacity-0"
-                "entered" "ease-out duration-300 opacity-100"
-                "exiting" "ease-in duration-200 opacity-100"
-                "exited" "ease-in duration-200 opacity-0")
+                "entering" "opacity-100"
+                "entered" "opacity-100"
+                "exiting" "opacity-0"
+                "exited" "opacity-0")
     :on-click #(when close-backdrop? (close-fn))}
    [:div.absolute.inset-0.opacity-75]])
 
@@ -599,12 +599,12 @@
 
 (rum/defc modal-panel
   [show? panel-content transition-state close-fn fullscreen? close-btn?]
-  [:div.ui__modal-panel.transform.transition-all.sm:min-w-lg.sm
+  [:div.ui__modal-panel.sm:min-w-lg.sm
    {:class (case transition-state
-             "entering" "ease-out duration-300 opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
-             "entered" "ease-out duration-300 opacity-100 translate-y-0 sm:scale-100"
-             "exiting" "ease-in duration-200 opacity-100 translate-y-0 sm:scale-100"
-             "exited" "ease-in duration-200 opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95")}
+             "entering" "opacity-100"
+             "entered" "opacity-100"
+             "exiting" "opacity-0"
+             "exited" "opacity-0")}
    (when-not (false? close-btn?)
      [:div.ui__modal-close-wrap
       [:a.ui__modal-close
