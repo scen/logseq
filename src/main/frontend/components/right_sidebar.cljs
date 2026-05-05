@@ -404,9 +404,7 @@
 
     (rum/use-effect!
      (fn []
-        ;; sidebar animation duration
-       (js/setTimeout
-        #(reset! ui-handler/*right-sidebar-resized-at (js/Date.now)) 300))
+       (reset! ui-handler/*right-sidebar-resized-at (js/Date.now)))
      [sidebar-open?])
 
     [:.resizer

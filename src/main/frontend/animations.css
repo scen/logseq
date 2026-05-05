@@ -1,60 +1,22 @@
-/* make keyframes that tell the start state and the end state of our object */
-@-webkit-keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-
-  to {
-    opacity: 1;
-  }
-}
-
-@-moz-keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-
-  to {
-    opacity: 1;
-  }
-}
+/* Animations have been disabled to keep the UI snappy (especially over RDP). */
 
 @keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-
-  to {
-    opacity: 1;
-  }
+  from { opacity: 1; }
+  to { opacity: 1; }
 }
 
-.fade-in {
-  opacity: 0; /* make things invisible upon start */
-  animation: fadeIn ease-in 1; /* call our keyframe named fadeIn, use animattion ease-in and repeat it only 1 time */
-  animation-fill-mode: forwards; /* this makes sure that after animation is done we remain at the last keyframe value (opacity: 1) */
-  animation-duration: 1s;
-}
-
+.fade-in,
 .faster-fade-in {
-  animation-duration: 0.3s;
-}
-
-/* page transition */
-.fade-enter {
-  opacity: 0;
-}
-
-.fade-enter.fade-enter-active {
+  animation: none;
   opacity: 1;
-  transition: opacity 500ms ease-in;
 }
 
+.fade-enter,
 .fade-exit {
   opacity: 1;
 }
 
+.fade-enter.fade-enter-active,
 .fade-exit.fade-exit-active {
-  opacity: 0;
-  transition: opacity 300ms ease-in;
+  transition: none;
 }
