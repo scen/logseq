@@ -1,0 +1,43 @@
+/* Disable UI animations globally to keep Logseq snappy, especially over RDP.
+ * Loaded last (zz_) so the @import-glob picks it up after other component CSS,
+ * which means these rules win the cascade for the targeted classes. */
+
+/* Tailwind animate-in / animate-out utilities (used by Radix dialogs, popovers,
+ * dropdowns, the command palette, tooltips, toasts, sheets, etc.) */
+.animate-in,
+.animate-out,
+[class*="animate-in"],
+[class*="animate-out"],
+[class*="fade-in"],
+[class*="fade-out"],
+[class*="zoom-in"],
+[class*="zoom-out"],
+[class*="slide-in"],
+[class*="slide-out"] {
+  animation: none !important;
+  animation-duration: 0s !important;
+}
+
+/* Radix data-state driven animations (dropdown / dialog / popover open/close) */
+[data-state="open"],
+[data-state="closed"],
+[data-side="top"],
+[data-side="bottom"],
+[data-side="left"],
+[data-side="right"] {
+  animation: none !important;
+  animation-duration: 0s !important;
+}
+
+/* Accordion expand/collapse */
+.accordion-down,
+.accordion-up,
+[class*="accordion-"] {
+  animation: none !important;
+  animation-duration: 0s !important;
+}
+
+/* Reveal.js slide transitions in presentations */
+.reveal .slides section {
+  transition: none !important;
+}
