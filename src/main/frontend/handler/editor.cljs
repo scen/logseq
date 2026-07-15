@@ -1939,6 +1939,26 @@
         (state/set-editor-last-pos! pos)
         (state/set-editor-action! :page-search-hashtag))
 
+      ;; Expand `@` into `[[@]]` with the cursor after the `@`, then open the
+      ;; same "Search page or New page" auto-complete as any wiki link
+      (and (= last-input-char commands/at-sign)
+           (nil? (state/get-editor-action))
+           ;; Only trigger at beginning of a block, a line or a word
+           (or (nil? last-prev-input-char)
+               (= last-prev-input-char "\n")
+               (start-of-new-word? input pos)))
+      (do
+        (commands/handle-step [:editor/input (str page-ref/left-brackets
+                                                  commands/at-sign
+                                                  page-ref/right-brackets)
+                               {:backward-truncate-number 1
+                                :backward-pos 2}])
+        (commands/handle-step [:editor/search-page])
+        ;; Set the search-query start to right after `[[`, so the `@` is part
+        ;; of the query, consistent with typing inside a wiki link
+        (state/set-editor-last-pos! (dec (cursor/pos input)))
+        (state/set-editor-action-data! {:pos (cursor/get-caret-pos input)}))
+
       :else
       nil)))
 
