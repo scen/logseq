@@ -29,6 +29,7 @@
 
 (defonce angle-bracket "<")
 (defonce hashtag "#")
+(defonce at-sign "@")
 (defonce colon ":")
 (defonce command-trigger "/")
 (defonce *current-command (atom nil))

@@ -219,6 +219,25 @@
                                 :cursor-pos (dec (count "`String#gsub and String#`"))})
     (is (= nil (state/get-editor-action))
         "No page search within backticks"))
+
+  (testing "@ mention autocompletion"
+    (handle-last-input-handler {:value "@"
+                                :cursor-pos 1})
+    (is (= :page-search (state/get-editor-action))
+        "Page search if @ has been typed at start of a block")
+
+    (handle-last-input-handler {:value "foo @"
+                                :cursor-pos 5})
+    (is (= :page-search (state/get-editor-action))
+        "Page search if @ has been typed after a space")
+
+    (handle-last-input-handler {:value "a line\n@"})
+    (is (= :page-search (state/get-editor-action))
+        "Page search if @ has been typed at start of a new line")
+
+    (handle-last-input-handler {:value "foo@bar" :cursor-pos 4})
+    (is (= nil (state/get-editor-action))
+        "No page search if @ is in the middle of a word (e.g. an email address)"))
   ;; Reset state
   (state/set-editor-action! nil))
 
