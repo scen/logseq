@@ -1947,7 +1947,11 @@
            (or (nil? last-prev-input-char)
                (= last-prev-input-char "\n")
                (start-of-new-word? input pos)))
-      (do
+      ;; The popup anchor must be captured before rewriting the content:
+      ;; get-caret-pos resolves coordinates through #mock-text, which still
+      ;; mirrors the pre-expansion content until the next render, so it can't
+      ;; resolve positions past the just-typed `@`
+      (let [caret-pos (cursor/get-caret-pos input)]
         (commands/handle-step [:editor/input (str page-ref/left-brackets
                                                   commands/at-sign
                                                   page-ref/right-brackets)
@@ -1957,7 +1961,7 @@
         ;; Set the search-query start to right after `[[`, so the `@` is part
         ;; of the query, consistent with typing inside a wiki link
         (state/set-editor-last-pos! (dec (cursor/pos input)))
-        (state/set-editor-action-data! {:pos (cursor/get-caret-pos input)}))
+        (state/set-editor-action-data! {:pos caret-pos}))
 
       :else
       nil)))
